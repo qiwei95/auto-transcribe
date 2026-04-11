@@ -262,15 +262,28 @@ def transcribe(audio_path: Path) -> str:
     return text
 
 
+VALID_SCENES = ("meeting", "content", "memo", "1on1", "class", "call", "daylog", "discussion")
+TYPE_TAGS = {
+    "meeting": "会议", "content": "内容", "memo": "备忘",
+    "1on1": "一对一", "class": "课堂", "call": "通话",
+    "daylog": "日志", "discussion": "研讨",
+}
+
+
 def classify(transcript: str) -> str:
-    """用 Claude CLI 判断录音类型：meeting / content / memo"""
+    """用 Claude CLI 判断录音类型"""
     log("  分类中...")
     snippet = transcript[:1500]
     prompt = (
         "根据以下转录内容，判断录音类型。只回答一个词：\n"
         "- meeting（多人会议/讨论）\n"
-        "- content（播客/讲座/课堂/新闻评论）\n"
-        "- memo（个人语音备忘/想法）\n\n"
+        "- content（播客/讲座/新闻评论）\n"
+        "- memo（个人语音备忘/想法）\n"
+        "- 1on1（一对一谈话/面谈）\n"
+        "- class（课堂教学/授课）\n"
+        "- call（电话通话）\n"
+        "- daylog（一天的杂项录音/日志）\n"
+        "- discussion（深度讨论/研讨/辩论）\n\n"
         f"转录内容：\n{snippet}"
     )
     try:
@@ -282,7 +295,7 @@ def classify(transcript: str) -> str:
         )
         if result.returncode == 0:
             answer = result.stdout.strip().lower()
-            for scene in ("meeting", "content", "memo"):
+            for scene in VALID_SCENES:
                 if scene in answer:
                     log(f"  分类结果: {scene}")
                     return scene
@@ -404,8 +417,8 @@ def write_obsidian_note(summary: str, transcript: str, source_name: str,
         note_path = OBSIDIAN_OUTPUT / note_name
         counter += 1
 
-    note_type = scene if scene in ("meeting", "content", "memo") else "memo"
-    type_tag = {"meeting": "会议", "content": "内容", "memo": "备忘"}[note_type]
+    note_type = scene if scene in VALID_SCENES else "memo"
+    type_tag = TYPE_TAGS[note_type]
 
     frontmatter = f"""---
 date: {today}

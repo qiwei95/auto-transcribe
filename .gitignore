@@ -13,6 +13,7 @@ config.yaml
 processed.json
 voicememos-synced.json
 plaud-pulled.json
+plaud-templates*.json
 .env
 .process.lock
 
