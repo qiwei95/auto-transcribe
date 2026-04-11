@@ -239,6 +239,39 @@ def strip_silence(audio_path: Path) -> Path | None:
         return None
 
 
+CHUNK_MINUTES = 25  # 超过此时长则分段转录
+CHUNK_TIMEOUT = 1800  # 每段转录超时（秒）
+
+
+def split_audio(audio_path: Path, chunk_minutes: int = CHUNK_MINUTES) -> list[Path]:
+    """用 ffmpeg 把长音频切成等长小段"""
+    duration = get_audio_duration(audio_path)
+    chunk_sec = chunk_minutes * 60
+
+    if duration <= chunk_sec:
+        return []
+
+    total_chunks = int(duration // chunk_sec) + (1 if duration % chunk_sec > 0 else 0)
+    log(f"  音频过长 ({int(duration/60)}分钟)，切成 {total_chunks} 段（每段 {chunk_minutes} 分钟）")
+
+    chunks = []
+    for i in range(total_chunks):
+        start = i * chunk_sec
+        chunk_path = audio_path.with_suffix(f".chunk{i}.wav")
+        result = subprocess.run(
+            ["ffmpeg", "-i", str(audio_path), "-ss", str(start),
+             "-t", str(chunk_sec), "-ar", "16000", "-ac", "1",
+             str(chunk_path), "-y"],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode == 0 and chunk_path.exists():
+            chunks.append(chunk_path)
+        else:
+            log(f"  ⚠ 切割第 {i+1} 段失败")
+
+    return chunks
+
+
 def transcribe(audio_path: Path) -> str:
     """用 Vibe (sona CLI / whisper.cpp + CoreML) 本地转录"""
     log(f"  Vibe 转录中: {audio_path.name}")
@@ -248,10 +281,39 @@ def transcribe(audio_path: Path) -> str:
     if not SONA_MODEL.exists():
         raise RuntimeError(f"Whisper 模型不存在: {SONA_MODEL}")
 
+    # 长音频分段转录
+    chunks = split_audio(audio_path)
+    if chunks:
+        texts = []
+        for i, chunk in enumerate(chunks):
+            log(f"  转录第 {i+1}/{len(chunks)} 段...")
+            try:
+                result = subprocess.run(
+                    [str(SONA_CLI), "transcribe", str(SONA_MODEL), str(chunk),
+                     "--language", WHISPER_LANGUAGE],
+                    capture_output=True, text=True, timeout=CHUNK_TIMEOUT,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    texts.append(result.stdout.strip())
+                else:
+                    log(f"  ⚠ 第 {i+1} 段转录为空")
+            except subprocess.TimeoutExpired:
+                log(f"  ⚠ 第 {i+1} 段转录超时，跳过")
+            finally:
+                chunk.unlink(missing_ok=True)
+
+        if not texts:
+            raise RuntimeError("所有分段转录均失败")
+
+        text = "\n\n".join(texts)
+        log(f"  转录完成: {len(text)} 字 ({len(chunks)} 段合并)")
+        return text
+
+    # 短音频直接转录
     result = subprocess.run(
         [str(SONA_CLI), "transcribe", str(SONA_MODEL), str(audio_path),
          "--language", WHISPER_LANGUAGE],
-        capture_output=True, text=True, timeout=1800,  # 30 分钟超时
+        capture_output=True, text=True, timeout=CHUNK_TIMEOUT,
     )
 
     if result.returncode != 0:
