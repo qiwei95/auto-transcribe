@@ -186,8 +186,10 @@ def strip_silence(audio_path: Path) -> Path | None:
             log("  ⚠ VAD: ffmpeg 转换失败，跳过")
             return None
 
-        # 读取 WAV 数据（跳过 44 字节 header）
-        raw = np.fromfile(str(tmp_wav), dtype=np.int16)[22:]  # 简易跳过 header
+        # 用 wave 模块正确读取 WAV 数据（支持任意长度 header）
+        import wave as wave_mod
+        with wave_mod.open(str(tmp_wav), "rb") as wf:
+            raw = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
         audio_tensor = torch.from_numpy(raw.copy()).float() / 32768.0
 
         # 加载 Silero VAD 模型
@@ -239,8 +241,8 @@ def strip_silence(audio_path: Path) -> Path | None:
         return None
 
 
-CHUNK_MINUTES = 25  # 超过此时长则分段转录
-CHUNK_TIMEOUT = 1800  # 每段转录超时（秒）
+CHUNK_MINUTES = 360  # 6 小时以上才分段（sona/whisper.cpp 能自己处理长音频）
+CHUNK_TIMEOUT = 7200  # 每段转录超时（秒）
 
 
 def split_audio(audio_path: Path, chunk_minutes: int = CHUNK_MINUTES) -> list[Path]:
@@ -260,7 +262,7 @@ def split_audio(audio_path: Path, chunk_minutes: int = CHUNK_MINUTES) -> list[Pa
         chunk_path = audio_path.with_suffix(f".chunk{i}.wav")
         result = subprocess.run(
             ["ffmpeg", "-i", str(audio_path), "-ss", str(start),
-             "-t", str(chunk_sec), "-ar", "16000", "-ac", "1",
+             "-t", str(chunk_sec),
              str(chunk_path), "-y"],
             capture_output=True, timeout=120,
         )
@@ -652,33 +654,36 @@ def main():
         lock_file.close()
         return
 
-    db = load_processed()
-    files_found = 0
-    files_ok = 0
+    try:
+        db = load_processed()
+        files_found = 0
+        files_ok = 0
 
-    # 扫描 inbox
-    for f in sorted(INBOX.iterdir()):
-        if f.name.startswith("."):
-            continue
-        if "/" in f.name or "\\" in f.name or ".." in f.name:
-            log(f"跳过（可疑文件名）: {f.name}")
-            continue
-        if f.suffix.lower() not in ALL_EXTENSIONS:
-            continue
-        if f.name in db:
-            log(f"跳过（已处理）: {f.name}")
-            continue
+        # 扫描 inbox
+        for f in sorted(INBOX.iterdir()):
+            if f.name.startswith("."):
+                continue
+            if "/" in f.name or "\\" in f.name or ".." in f.name:
+                log(f"跳过（可疑文件名）: {f.name}")
+                continue
+            if f.suffix.lower() not in ALL_EXTENSIONS:
+                continue
+            if f.name in db:
+                log(f"跳过（已处理）: {f.name}")
+                continue
 
-        # 等文件就绪
-        if not wait_for_file_ready(f):
-            log(f"跳过（文件未就绪）: {f.name}")
-            continue
+            # 等文件就绪
+            if not wait_for_file_ready(f):
+                log(f"跳过（文件未就绪）: {f.name}")
+                continue
 
-        files_found += 1
-        if process_file(f, db):
-            files_ok += 1
+            files_found += 1
+            if process_file(f, db):
+                files_ok += 1
 
-    log(f"=== 完成: {files_ok}/{files_found} 个文件处理成功 ===")
+        log(f"=== 完成: {files_ok}/{files_found} 个文件处理成功 ===")
+    finally:
+        lock_file.close()
 
 
 if __name__ == "__main__":

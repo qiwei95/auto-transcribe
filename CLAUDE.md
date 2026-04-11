@@ -88,6 +88,7 @@ tail -20 /tmp/auto-transcribe-out.log # 转录日志
 3. **Phase 3** ✅：iCloud 同步 + Plaud 集成（Plaud 录音通过网页 API 自动拉取，参考 openplaud/openplaud 和 sergivalverde/plaud-toolkit）
 4. **Phase 3.5** 🔶：iOS 快捷指令（简化 iPhone 分享流程）
 5. **Phase 4**：智能场景识别 + prompt 优化
+6. **Phase 5** 🔶：Web UI 控制面板（NiceGUI，`app.py`，`python3.13 app.py` 启动，http://localhost:8080）
 
 ## iPhone 使用方法
 

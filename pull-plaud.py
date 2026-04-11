@@ -13,11 +13,15 @@ Plaud 录音自动拉取脚本
 
 import base64
 import json
+import os
+import re
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -32,12 +36,33 @@ LOCAL_INBOX = BASE_DIR / "inbox"
 PULLED_DB = BASE_DIR / "plaud-pulled.json"
 PLAUD_CONFIG = Path.home() / ".plaud" / "config.json"
 
+# 允许的 Plaud API 域名（防止 config 被篡改后 token 发到别处）
+ALLOWED_API_BASES = {
+    "https://api-apse1.plaud.ai",
+    "https://api.plaud.ai",
+    "https://api-euc1.plaud.ai",
+}
+
+# 允许的下载 URL 域名后缀（S3 预签名 URL）
+ALLOWED_DOWNLOAD_HOSTS = (
+    ".amazonaws.com",
+    ".plaud.ai",
+)
+
 # 模拟网页端请求头（API 校验 Origin）
 WEB_HEADERS = {
     "Origin": "https://web.plaud.ai",
     "Referer": "https://web.plaud.ai/",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
 }
+
+
+def is_safe_download_url(url: str) -> bool:
+    """检查下载 URL 是否在允许的域名范围内"""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    return any(parsed.netloc.endswith(h) for h in ALLOWED_DOWNLOAD_HOSTS)
 
 
 def log(msg: str) -> None:
@@ -53,14 +78,30 @@ def load_plaud_config() -> dict:
 
 
 def load_pulled() -> dict:
-    """已拉取录音的记录（file_id → 信息）"""
+    """已拉取录音的记录（file_id → 信息），JSON 损坏时备份后重置"""
     if PULLED_DB.exists():
-        return json.loads(PULLED_DB.read_text())
+        try:
+            return json.loads(PULLED_DB.read_text())
+        except (json.JSONDecodeError, ValueError):
+            log("⚠ plaud-pulled.json 损坏，备份后重置")
+            import shutil
+            backup = PULLED_DB.with_suffix(".json.bak")
+            shutil.copy2(PULLED_DB, backup)
+            return {}
     return {}
 
 
 def save_pulled(db: dict) -> None:
-    PULLED_DB.write_text(json.dumps(db, indent=2, ensure_ascii=False))
+    """原子写入：先写临时文件再 rename，断电也不会损坏"""
+    fd, tmp = tempfile.mkstemp(dir=PULLED_DB.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, PULLED_DB)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def api_get(url: str, token: str) -> dict | bytes:
@@ -111,6 +152,9 @@ def download_mp3(api_base: str, token: str, file_id: str) -> bytes | None:
         if isinstance(resp, dict) and resp.get("status") == 0:
             mp3_url = resp.get("temp_url", "")
             if mp3_url:
+                if not is_safe_download_url(mp3_url):
+                    log(f"  拒绝不安全的下载 URL: {mp3_url[:80]}")
+                    return None
                 # S3 预签名 URL 不需要 auth header
                 req = Request(mp3_url)
                 with urlopen(req, timeout=120) as dl_resp:
@@ -138,7 +182,11 @@ def make_filename(recording: dict) -> str:
     # Plaud 的 filename 格式是 "2026-04-11 10:05:55"
     if name:
         safe = name.replace(" ", "_").replace(":", "-")
-        return safe
+        # 只保留安全字符（字母、数字、横线、下划线、中文）
+        safe = re.sub(r"[^a-zA-Z0-9\-_\u4e00-\u9fff]", "_", safe)
+        safe = safe.strip("._")
+        if safe:
+            return safe[:100]
 
     # 回退：用 start_time 时间戳
     start = recording.get("start_time", 0)
@@ -176,6 +224,11 @@ def main() -> None:
     plaud_cfg = load_plaud_config()
     token = plaud_cfg.get("token", "")
     api_base = plaud_cfg.get("api_base", "https://api-apse1.plaud.ai")
+
+    if api_base not in ALLOWED_API_BASES:
+        log(f"✗ 不信任的 api_base: {api_base}")
+        log(f"  允许的值: {', '.join(sorted(ALLOWED_API_BASES))}")
+        return
 
     if not token:
         log("✗ 未找到 Plaud token")

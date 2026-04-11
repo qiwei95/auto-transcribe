@@ -1,5 +1,6 @@
 # Python 依赖 / Python dependencies
 PyYAML>=6.0
+nicegui>=3.10.0
 
 # 系统依赖（需另外安装）/ System dependencies (install separately)
 # ─────────────────────────────────────────────────────────────
