@@ -1,0 +1,56 @@
+# auto-transcribe 配置文件 / Configuration File
+# 复制此文件为 config.yaml 并修改 / Copy this file to config.yaml and edit
+#
+# 搜索顺序 / Search order:
+#   1. ./config.yaml (项目目录 / project directory)
+#   2. ~/.config/auto-transcribe/config.yaml (用户目录 / user directory)
+#   3. 不存在则用默认值 / defaults if neither exists
+
+# ── 路径 / Paths ────────────────────────────────
+
+# 项目根目录 / Project root directory
+base_dir: ~/auto-transcribe
+
+# Obsidian 笔记输出目录 / Obsidian notes output directory
+obsidian_output: ~/Documents/Obsidian Vault/录音笔记
+
+# ── Whisper / Vibe 转录引擎 ─────────────────────
+
+# Vibe (sona) CLI 路径 / Vibe CLI path
+sona_cli: /Applications/vibe.app/Contents/MacOS/sona
+
+# Whisper 模型路径 / Whisper model path
+sona_model: ~/Library/Application Support/github.com.thewh1teagle.vibe/ggml-large-v3-turbo.bin
+
+# 转录语言 / Transcription language (zh/en/ja/...)
+whisper_language: zh
+
+# ── iCloud 同步 / iCloud Sync ───────────────────
+
+# iCloud Drive 中的录音收件箱 / Voice inbox folder in iCloud Drive
+# iPhone 录音存到这个文件夹，Mac 会自动同步
+# Save iPhone recordings to this folder, Mac syncs automatically
+icloud_inbox: ~/Library/Mobile Documents/com~apple~CloudDocs/录音收件箱
+
+# ── Voice Memos 同步 ────────────────────────────
+
+# macOS 语音备忘录目录 / macOS Voice Memos directory
+voice_memos_dir: ~/Library/Application Support/com.apple.voicememos/Recordings
+
+# ── Plaud 集成（实验性）/ Plaud Integration (WIP) ──
+
+# 从 https://platform.plaud.ai 获取 / Get from https://platform.plaud.ai
+# 也可以写在 .env 文件中 / Can also be set in .env file
+plaud_client_id: ""
+plaud_secret_key: ""
+
+# ── 行为参数 / Behavior ─────────────────────────
+
+# 文件大小稳定等待秒数 / Seconds to wait for file size to stabilize
+file_stable_seconds: 5
+
+# Claude CLI 最大重试次数 / Claude CLI max retries
+claude_max_retries: 3
+
+# Claude CLI 超时秒数 / Claude CLI timeout in seconds
+claude_timeout: 1800

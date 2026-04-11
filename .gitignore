@@ -1,0 +1,20 @@
+# 运行数据 / Runtime data
+logs/
+done/
+failed/
+processing/
+inbox/
+transcripts/
+__pycache__/
+*.pyc
+
+# 用户配置和状态 / User config and state
+config.yaml
+processed.json
+voicememos-synced.json
+plaud-pulled.json
+.env
+.process.lock
+
+# macOS
+.DS_Store
