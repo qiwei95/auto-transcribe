@@ -1,33 +1,24 @@
 #!/usr/bin/env python3
 """
-Plaud.ai 录音拉取脚本 / Plaud.ai recording puller
+Plaud 录音自动拉取脚本
 
-⚠ WIP / 实验性功能 — 录音列表获取和下载尚未实现
-⚠ WIP / Experimental — recording list fetch and download not yet implemented
+通过 Plaud 网页 API 直接下载录音到 inbox/，由现有管道自动转录。
 
-定时从 Plaud API 下载新录音到本地 inbox/
-
-配置方式（任选其一）:
-  1. config.yaml 中设置 plaud_client_id 和 plaud_secret_key
-  2. ~/auto-transcribe/.env 中设置:
-     PLAUD_CLIENT_ID=你的client_id
-     PLAUD_SECRET_KEY=你的secret_key
+认证方式：
+  Bearer token 存放在 ~/.plaud/config.json（从 web.plaud.ai 的 localStorage 获取）
 
 用法：python pull-plaud.py
-由 launchd 定时触发（每 30 分钟）
-
-注意：需要先在 https://platform.plaud.ai 注册 Developer 账号获取 API 凭证
+由 launchd 定时触发（每 5 分钟）
 """
 
+import base64
 import json
-import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.error import URLError
-import base64
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
@@ -39,10 +30,14 @@ _cfg = load_config()
 BASE_DIR = _cfg.base_dir
 LOCAL_INBOX = BASE_DIR / "inbox"
 PULLED_DB = BASE_DIR / "plaud-pulled.json"
-ENV_FILE = BASE_DIR / ".env"
+PLAUD_CONFIG = Path.home() / ".plaud" / "config.json"
 
-# Plaud API
-API_BASE = "https://platform.plaud.ai/developer/api"
+# 模拟网页端请求头（API 校验 Origin）
+WEB_HEADERS = {
+    "Origin": "https://web.plaud.ai",
+    "Referer": "https://web.plaud.ai/",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+}
 
 
 def log(msg: str) -> None:
@@ -50,39 +45,15 @@ def log(msg: str) -> None:
     print(f"[{ts}] [plaud] {msg}")
 
 
-def load_env() -> dict[str, str]:
-    """从 .env 文件读取配置"""
-    env = {}
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    return env
-
-
-def get_access_token(client_id: str, secret_key: str) -> str:
-    """获取 Plaud Partner API access token"""
-    credentials = base64.b64encode(
-        f"{client_id}:{secret_key}".encode()
-    ).decode()
-
-    req = Request(
-        f"{API_BASE}/oauth/partner/access-token",
-        method="POST",
-        headers={
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    with urlopen(req) as resp:
-        data = json.loads(resp.read())
-        return data["access_token"]
+def load_plaud_config() -> dict:
+    """读取 ~/.plaud/config.json"""
+    if not PLAUD_CONFIG.exists():
+        return {}
+    return json.loads(PLAUD_CONFIG.read_text())
 
 
 def load_pulled() -> dict:
+    """已拉取录音的记录（file_id → 信息）"""
     if PULLED_DB.exists():
         return json.loads(PULLED_DB.read_text())
     return {}
@@ -92,36 +63,202 @@ def save_pulled(db: dict) -> None:
     PULLED_DB.write_text(json.dumps(db, indent=2, ensure_ascii=False))
 
 
+def api_get(url: str, token: str) -> dict | bytes:
+    """发送 GET 请求到 Plaud API"""
+    req = Request(url)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    for k, v in WEB_HEADERS.items():
+        req.add_header(k, v)
+
+    with urlopen(req, timeout=60) as resp:
+        content_type = resp.headers.get("Content-Type", "")
+        data = resp.read()
+        if "json" in content_type:
+            return json.loads(data)
+        return data
+
+
+def fetch_recordings(api_base: str, token: str) -> list[dict]:
+    """获取所有录音列表"""
+    url = f"{api_base}/file/simple/web"
+    resp = api_get(url, token)
+
+    if not isinstance(resp, dict) or resp.get("status") != 0:
+        log(f"  API 返回异常: {resp}")
+        return []
+
+    items = resp.get("data_file_list", [])
+
+    # Plaud 自带示例录音的标题关键词
+    demo_keywords = {"welcome_to_plaud", "how_to_use_plaud", "steve_jobs"}
+
+    result = []
+    for item in items:
+        if item.get("is_trash", False):
+            continue
+        name = (item.get("filename", "") or "").lower().replace(" ", "_")
+        if any(kw in name for kw in demo_keywords):
+            continue
+        result.append(item)
+    return result
+
+
+def download_mp3(api_base: str, token: str, file_id: str) -> bytes | None:
+    """通过临时 URL 下载 MP3"""
+    try:
+        resp = api_get(f"{api_base}/file/temp-url/{file_id}", token)
+        if isinstance(resp, dict) and resp.get("status") == 0:
+            mp3_url = resp.get("temp_url", "")
+            if mp3_url:
+                # S3 预签名 URL 不需要 auth header
+                req = Request(mp3_url)
+                with urlopen(req, timeout=120) as dl_resp:
+                    return dl_resp.read()
+    except (HTTPError, URLError) as e:
+        log(f"  MP3 下载失败: {e}")
+    return None
+
+
+def download_raw(api_base: str, token: str, file_id: str) -> bytes | None:
+    """直接下载原始格式"""
+    try:
+        data = api_get(f"{api_base}/file/download/{file_id}", token)
+        if isinstance(data, bytes) and len(data) > 0:
+            return data
+    except (HTTPError, URLError) as e:
+        log(f"  原始下载失败: {e}")
+    return None
+
+
+def make_filename(recording: dict) -> str:
+    """从录音信息生成文件名（基于 filename 字段，如 '2026-04-11 10:05:55'）"""
+    name = recording.get("filename", "")
+
+    # Plaud 的 filename 格式是 "2026-04-11 10:05:55"
+    if name:
+        safe = name.replace(" ", "_").replace(":", "-")
+        return safe
+
+    # 回退：用 start_time 时间戳
+    start = recording.get("start_time", 0)
+    if start:
+        ts = start / 1000 if start > 1e12 else start
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%Y-%m-%d_%H-%M-%S")
+
+    return f"plaud_{int(time.time())}"
+
+
+def check_token_expiry(token: str) -> None:
+    """检查 token 是否快过期"""
+    try:
+        payload = token.split(".")[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        data = json.loads(base64.b64decode(payload))
+        exp = data.get("exp", 0)
+        days_left = (exp - time.time()) / 86400
+        if days_left < 30:
+            log(f"⚠ Token 将在 {int(days_left)} 天后过期！")
+            log("  更新方法: web.plaud.ai → F12 → Console → localStorage.getItem('tokenstr')")
+        elif days_left < 60:
+            log(f"  Token 还有 {int(days_left)} 天有效")
+    except Exception:
+        pass
+
+
 def main() -> None:
     log("=== Plaud 录音拉取启动 ===")
 
-    env = load_env()
-    client_id = env.get("PLAUD_CLIENT_ID", "") or _cfg.plaud_client_id
-    secret_key = env.get("PLAUD_SECRET_KEY", "") or _cfg.plaud_secret_key
+    # 读取配置
+    plaud_cfg = load_plaud_config()
+    token = plaud_cfg.get("token", "")
+    api_base = plaud_cfg.get("api_base", "https://api-apse1.plaud.ai")
 
-    if not client_id or not secret_key:
-        log("⚠ 未配置 Plaud API 凭证")
-        log("  请在 ~/auto-transcribe/.env 中设置:")
-        log("  PLAUD_CLIENT_ID=你的client_id")
-        log("  PLAUD_SECRET_KEY=你的secret_key")
-        log("  获取地址: https://platform.plaud.ai")
+    if not token:
+        log("✗ 未找到 Plaud token")
+        log(f"  请在 {PLAUD_CONFIG} 中配置 token")
         return
 
+    # 去掉前缀 "bearer " 如果有的话
+    if token.lower().startswith("bearer "):
+        token = token[7:]
+
+    check_token_expiry(token)
+
+    LOCAL_INBOX.mkdir(parents=True, exist_ok=True)
+
+    # 获取录音列表
+    log("获取录音列表...")
     try:
-        token = get_access_token(client_id, secret_key)
-        log("✓ API 认证成功")
-    except (URLError, KeyError) as e:
-        log(f"✗ API 认证失败: {e}")
+        recordings = fetch_recordings(api_base, token)
+    except Exception as e:
+        log(f"✗ 获取录音列表失败: {e}")
         return
 
-    # TODO: 实现录音列表获取和下载
-    # Plaud Partner API 的录音列表端点可能需要根据实际文档调整
-    # 非官方 Python 客户端: pip install plaud-ai
-    # 或参考: https://github.com/DmytroLitvinov/python-plaud-ai
-    log("⚠ 录音拉取功能待实现——需要根据 Plaud API 文档完善")
-    log("  参考: https://docs.plaud.ai")
-    log("  非官方客户端: pip install plaud-ai")
-    log("=== Plaud 拉取结束 ===")
+    if not recordings:
+        log("没有新录音")
+        log("=== Plaud 拉取结束 ===")
+        return
+
+    log(f"找到 {len(recordings)} 条录音")
+
+    # 对比已拉取记录
+    pulled = load_pulled()
+    new_count = 0
+    skip_count = 0
+
+    for rec in recordings:
+        file_id = rec.get("id", "")
+        if not file_id:
+            continue
+
+        if file_id in pulled:
+            skip_count += 1
+            continue
+
+        filename = make_filename(rec)
+        duration_ms = rec.get("duration", 0)
+        duration_sec = duration_ms // 1000
+        duration_min = duration_sec // 60
+        duration_remainder = duration_sec % 60
+        log(f"下载: {filename} ({duration_min}分{duration_remainder}秒)")
+
+        # 优先下载 MP3
+        audio_data = download_mp3(api_base, token, file_id)
+        ext = "mp3"
+
+        if not audio_data:
+            # 回退到原始格式
+            audio_data = download_raw(api_base, token, file_id)
+            ext = "ogg"
+
+        if audio_data:
+            dest = LOCAL_INBOX / f"{filename}.{ext}"
+            # 避免文件名冲突
+            counter = 1
+            while dest.exists():
+                dest = LOCAL_INBOX / f"{filename}_{counter}.{ext}"
+                counter += 1
+
+            dest.write_bytes(audio_data)
+            size_kb = len(audio_data) / 1024
+            log(f"  ✓ 已保存: {dest.name} ({size_kb:.0f} KB)")
+
+            pulled[file_id] = {
+                "filename": dest.name,
+                "downloaded_at": datetime.now().isoformat(),
+                "title": rec.get("filename", ""),
+                "duration": duration_sec,
+            }
+            save_pulled(pulled)
+            new_count += 1
+        else:
+            log(f"  ✗ 下载失败: {filename}")
+
+    log(f"=== 完成: {new_count} 个新录音, {skip_count} 个已跳过 ===")
 
 
 if __name__ == "__main__":

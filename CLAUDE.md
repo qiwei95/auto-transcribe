@@ -29,7 +29,7 @@ prompts/      → Claude 总结用的 prompt 模板
 
 - 主脚本：`process.py`（inbox 有新文件时自动触发）
 - iCloud 同步：`sync-icloud.py`（每 60 秒轮询 iCloud 录音收件箱 → 本地 inbox）
-- Plaud 拉取：`pull-plaud.py`（已弃用——Developer API 不开放，改用 App 导出到 iCloud 录音收件箱）
+- Plaud 拉取：`pull-plaud.py`（通过 Plaud 网页 API 直接拉取录音到 inbox，token 存在 `~/.plaud/config.json`）
 - 配置：`config.yaml`（必须存在，否则默认路径会错）
 - Obsidian 输出：`~/Documents/Obsidian Vault/录音笔记/`
 - iCloud 收件箱：`~/Library/Mobile Documents/com~apple~CloudDocs/录音收件箱/`
@@ -40,6 +40,7 @@ prompts/      → Claude 总结用的 prompt 模板
 |------|---------|------|
 | `com.jared.auto-transcribe` | WatchPaths: inbox/ | 转录 + 总结 + 存 Obsidian |
 | `com.jared.sync-icloud` | StartInterval: 60秒轮询 | iCloud 录音收件箱 → 本地 inbox |
+| `com.auto-transcribe.pull-plaud` | StartInterval: 300秒轮询 | Plaud 云端 → 本地 inbox |
 
 ### launchd 踩坑记录
 
@@ -84,7 +85,7 @@ tail -20 /tmp/auto-transcribe-out.log # 转录日志
 
 1. **Phase 1** ✅：核心管道（Vibe 转录 + Claude CLI 总结 + Obsidian）
 2. **Phase 2** ✅：launchd 自动触发（inbox 有新文件自动处理）
-3. **Phase 3** ✅：iCloud 同步 + Plaud 集成（Plaud 录音通过 App 导出到 iCloud 录音收件箱，Developer API 不开放申请）
+3. **Phase 3** ✅：iCloud 同步 + Plaud 集成（Plaud 录音通过网页 API 自动拉取，参考 openplaud/openplaud 和 sergivalverde/plaud-toolkit）
 4. **Phase 3.5** 🔶：iOS 快捷指令（简化 iPhone 分享流程）
 5. **Phase 4**：智能场景识别 + prompt 优化
 
@@ -97,7 +98,9 @@ tail -20 /tmp/auto-transcribe-out.log # 转录日志
 ## Plaud 集成说明
 
 - Plaud Desktop App 已安装（v1.1.7），用于录制 Mac 上的会议（Zoom/Teams/Slack）
-- Plaud 手机录音存在 Plaud 云端，不同步到 iCloud 或本地文件系统
-- Plaud Developer API 不开放申请（Private Beta）
-- 实际 API 域名：`api-apse1.plaud.ai`（亚太区），用户 API 非开发者 API
-- **使用流程**：Plaud App 录完 → 手动分享/导出 → 存到 iCloud 录音收件箱 → 自动处理
+- Plaud 手机录音存在 Plaud 云端，通过网页 API 自动拉取
+- API 域名：`api-apse1.plaud.ai`（亚太区），需模拟 web.plaud.ai 的 Origin/Referer 头
+- Bearer token 存放在 `~/.plaud/config.json`（权限 600），有效期约 300 天
+- Token 获取方法：web.plaud.ai → F12 → Console → `localStorage.getItem("tokenstr")`
+- 自动过滤 Plaud 自带示例录音（Welcome、How to use、Steve Jobs）
+- **使用流程**：Plaud 录完音 → 自动同步云端 → pull-plaud.py 每 5 分钟拉取 → inbox → 自动转录
