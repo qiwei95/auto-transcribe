@@ -54,3 +54,8 @@ claude_max_retries: 3
 
 # Claude CLI 超时秒数 / Claude CLI timeout in seconds
 claude_timeout: 1800
+
+# ── Telegram Capture Bot（可选）──────────────────
+# telegram_bot_token 建议用环境变量 TELEGRAM_BOT_TOKEN，不要写在这里
+# telegram_allowed_users: [123456789]  # 你的 Telegram user ID
+# captures_output: ~/Documents/Obsidian Vault/Captures

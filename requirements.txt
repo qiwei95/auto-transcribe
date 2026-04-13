@@ -1,6 +1,8 @@
 # Python 依赖 / Python dependencies
 PyYAML>=6.0
 nicegui>=3.10.0
+python-telegram-bot>=21.0
+httpx>=0.28
 
 # 系统依赖（需另外安装）/ System dependencies (install separately)
 # ─────────────────────────────────────────────────────────────

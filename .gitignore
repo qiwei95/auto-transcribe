@@ -16,6 +16,10 @@ plaud-pulled.json
 plaud-templates*.json
 .env
 .process.lock
+status.db
+
+# 敏感文件 / Sensitive files
+cookies.txt
 
 # macOS
 .DS_Store

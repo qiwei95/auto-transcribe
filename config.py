@@ -8,6 +8,7 @@
 3. 全用默认值 / Fall back to defaults
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,7 +20,7 @@ class Config:
     # 路径 / Paths
     base_dir: Path = field(default_factory=lambda: Path.home() / "auto-transcribe")
     obsidian_output: Path = field(
-        default_factory=lambda: Path.home() / "Documents" / "Obsidian Vault" / "录音笔记"
+        default_factory=lambda: Path.home() / "Documents" / "Obsidian Vault" / "recording-notes"
     )
 
     # Whisper / Vibe
@@ -54,6 +55,15 @@ class Config:
     plaud_client_id: str = ""
     plaud_secret_key: str = ""
 
+    # Telegram Bot
+    telegram_bot_token: str = ""
+    telegram_allowed_users: list[int] = field(default_factory=list)
+
+    # Captures（网页/社交媒体抓取输出）
+    captures_output: Path = field(
+        default_factory=lambda: Path.home() / "Documents" / "Obsidian Vault" / "social-captures"
+    )
+
     # 行为参数 / Behavior
     file_stable_seconds: int = 5
     claude_max_retries: int = 3
@@ -77,12 +87,15 @@ def load_config() -> Config:
             break
 
     if not raw:
-        return Config()
+        cfg = Config()
+        if not cfg.telegram_bot_token:
+            cfg.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        return cfg
 
     # 路径字段需要展开 ~
     path_fields = {
-        "base_dir", "obsidian_output", "sona_cli", "sona_model",
-        "icloud_inbox", "voice_memos_dir",
+        "base_dir", "obsidian_output", "captures_output",
+        "sona_cli", "sona_model", "icloud_inbox", "voice_memos_dir",
     }
 
     kwargs = {}
@@ -92,4 +105,7 @@ def load_config() -> Config:
         else:
             kwargs[key] = value
 
-    return Config(**kwargs)
+    cfg = Config(**kwargs)
+    if not cfg.telegram_bot_token:
+        cfg.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    return cfg

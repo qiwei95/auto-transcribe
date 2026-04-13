@@ -24,6 +24,7 @@ VOICE_MEMOS_DIR = _cfg.voice_memos_dir
 LOCAL_INBOX = _cfg.base_dir / "inbox"
 BASE_DIR = _cfg.base_dir
 SYNCED_DB = BASE_DIR / "voicememos-synced.json"
+PROCESSED_DB = BASE_DIR / "processed.json"
 
 FILE_STABLE_SECONDS = _cfg.file_stable_seconds
 
@@ -40,7 +41,16 @@ def load_synced() -> dict:
 
 
 def save_synced(db: dict) -> None:
-    SYNCED_DB.write_text(json.dumps(db, indent=2, ensure_ascii=False))
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=SYNCED_DB.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, SYNCED_DB)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def wait_for_download(path: Path) -> bool:
@@ -94,9 +104,22 @@ def main() -> None:
     db = load_synced()
     db = initialize_existing(db)
 
+    # 加载已处理记录，避免重复同步
+    processed = {}
+    if PROCESSED_DB.exists():
+        try:
+            processed = json.loads(PROCESSED_DB.read_text())
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     count = 0
     for f in sorted(VOICE_MEMOS_DIR.glob("*.m4a")):
         if f.name in db:
+            continue
+        if f.name in processed:
+            log(f"  跳过（已处理过）: {f.name}")
+            db[f.name] = {"synced_at": "已处理跳过", "skipped": True}
+            save_synced(db)
             continue
 
         log(f"  发现新录音: {f.name}")

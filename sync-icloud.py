@@ -6,6 +6,7 @@ iCloud 录音收件箱同步脚本
 由 launchd WatchPaths 触发
 """
 
+import json
 import shutil
 import subprocess
 import sys
@@ -76,11 +77,20 @@ def main() -> None:
         if f.suffix.lower() not in EXTENSIONS:
             continue
 
-        # 检查本地 inbox 是否已有同名文件
+        # 检查是否已处理过或已存在
         dest = LOCAL_INBOX / f.name
         if dest.exists():
             log(f"  跳过（已存在）: {f.name}")
             continue
+        processed_db = _cfg.base_dir / "processed.json"
+        if processed_db.exists():
+            try:
+                processed = json.loads(processed_db.read_text())
+                if f.name in processed:
+                    log(f"  跳过（已处理）: {f.name}")
+                    continue
+            except (json.JSONDecodeError, ValueError):
+                pass
 
         # 强制触发 iCloud 下载并等待完成
         log(f"  触发 iCloud 下载: {f.name}")
